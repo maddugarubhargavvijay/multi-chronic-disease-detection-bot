@@ -10,54 +10,184 @@ import os
 import joblib
 from tensorflow.keras.models import Model
 import logging
+from werkzeug.utils import secure_filename
+import traceback
+from datetime import datetime
+import threading
+import time
 
+# Disable SSL warnings
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
-logging.basicConfig(level=logging.INFO)
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.secret_key = 'your_super_secret_key'
+app.secret_key = 'your_super_secret_key_change_in_production'
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 CORS(app)
+
 # -------------------------------
 # CONFIGURATION
 # -------------------------------
-# -------------------------------
-# CONFIGURATION
-# -------------------------------
-try:
-    # Base directory where this file is running
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-    # Move up one level to repo root
-    ROOT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
-
-    # Model paths
-    cnn_model_path = os.path.join(ROOT_DIR, "models", "densenet_new_finetuned_v3.h5")
-    rf_model_path = os.path.join(ROOT_DIR, "models", "fast_rf_xgb_stack2.pkl")
-
-    # Load models
-    cnn_model = tf.keras.models.load_model(cnn_model_path)
-    rf_model = joblib.load(rf_model_path)
-
-    # Create feature extractor from CNN
-    feature_extractor = Model(
-        inputs=cnn_model.input,
-        outputs=cnn_model.get_layer("global_average_pooling2d").output
-    )
-
-    logging.info("✅ Models loaded successfully")
-
-except Exception as e:
-    logging.error(f"❌ Error loading models: {e}")
-    cnn_model = rf_model = feature_extractor = None
-
-
-GOMAPS_API_KEY = "YOUR_GOMAPS_API_KEY"
+GOMAPS_API_KEY = "YOUR_GOMAPS_API_KEY"  # Replace with your actual API key
 DISEASE_CLASSES = ["COPD", "fibrosis", "normal", "pneumonia", "pulmonary tb"]
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff'}
+
+# Global variables for models
+cnn_model = None
+rf_model = None
+feature_extractor = None
+models_loaded = False
 
 # -------------------------------
-# HTML Template with Advanced UI (No Emojis)
+# MODEL LOADING WITH OPTIMIZATION
+# -------------------------------
+def load_models():
+    """Load models with proper error handling and optimization"""
+    global cnn_model, rf_model, feature_extractor, models_loaded
+    
+    try:
+        logger.info("🔄 Starting model loading process...")
+        
+        # Base directory setup
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        ROOT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
+        
+        # Model paths
+        cnn_model_path = os.path.join(ROOT_DIR, "models", "densenet_new_finetuned_v3.h5")
+        rf_model_path = os.path.join(ROOT_DIR, "models", "fast_rf_xgb_stack2.pkl")
+        
+        # Check if model files exist
+        if not os.path.exists(cnn_model_path):
+            logger.error(f"❌ CNN model not found at: {cnn_model_path}")
+            return False
+            
+        if not os.path.exists(rf_model_path):
+            logger.error(f"❌ RF model not found at: {rf_model_path}")
+            return False
+        
+        # Configure TensorFlow for better performance
+        tf.config.threading.set_intra_op_parallelism_threads(2)
+        tf.config.threading.set_inter_op_parallelism_threads(2)
+        
+        # Disable GPU if not available to avoid warnings
+        try:
+            physical_devices = tf.config.list_physical_devices('GPU')
+            if not physical_devices:
+                tf.config.set_visible_devices([], 'GPU')
+        except:
+            pass
+        
+        # Load CNN model
+        logger.info("🔄 Loading CNN model...")
+        cnn_model = tf.keras.models.load_model(cnn_model_path, compile=False)
+        logger.info("✅ CNN model loaded successfully")
+        
+        # Load Random Forest model
+        logger.info("🔄 Loading Random Forest model...")
+        rf_model = joblib.load(rf_model_path)
+        logger.info("✅ Random Forest model loaded successfully")
+        
+        # Create feature extractor
+        logger.info("🔄 Creating feature extractor...")
+        try:
+            feature_extractor = Model(
+                inputs=cnn_model.input,
+                outputs=cnn_model.get_layer("global_average_pooling2d").output
+            )
+            logger.info("✅ Feature extractor created successfully")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not find 'global_average_pooling2d' layer, trying alternatives...")
+            # Try to find a suitable layer for feature extraction
+            for layer in reversed(cnn_model.layers):
+                if 'pool' in layer.name.lower() or 'flatten' in layer.name.lower():
+                    feature_extractor = Model(inputs=cnn_model.input, outputs=layer.output)
+                    logger.info(f"✅ Using layer '{layer.name}' for feature extraction")
+                    break
+            else:
+                logger.error("❌ Could not create feature extractor")
+                return False
+        
+        models_loaded = True
+        logger.info("🎉 All models loaded successfully!")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error loading models: {str(e)}")
+        logger.error(traceback.format_exc())
+        return False
+
+def allowed_file(filename):
+    """Check if file has allowed extension"""
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+# -------------------------------
+# UTILITIES
+# -------------------------------
+def preprocess_image(image_path):
+    """Preprocess image with error handling"""
+    try:
+        logger.info(f"🔄 Preprocessing image: {image_path}")
+        
+        # Read image
+        img = cv2.imread(image_path)
+        if img is None:
+            raise ValueError(f"Could not read image from {image_path}")
+        
+        # Resize image
+        img = cv2.resize(img, (224, 224))
+        
+        # Normalize
+        img = img.astype(np.float32) / 255.0
+        
+        # Add batch dimension
+        img = np.expand_dims(img, axis=0)
+        
+        logger.info("✅ Image preprocessed successfully")
+        return img
+        
+    except Exception as e:
+        logger.error(f"❌ Error preprocessing image: {str(e)}")
+        raise
+
+def cleanup_old_files():
+    """Clean up old uploaded files and reports"""
+    try:
+        uploads_dir = os.path.join(os.getcwd(), 'uploads')
+        reports_dir = os.path.join(os.getcwd(), 'reports')
+        
+        current_time = time.time()
+        
+        # Clean uploads older than 1 hour
+        if os.path.exists(uploads_dir):
+            for filename in os.listdir(uploads_dir):
+                file_path = os.path.join(uploads_dir, filename)
+                if os.path.isfile(file_path):
+                    if current_time - os.path.getmtime(file_path) > 3600:  # 1 hour
+                        os.remove(file_path)
+                        logger.info(f"🗑️ Cleaned up old upload: {filename}")
+        
+        # Clean reports older than 1 hour
+        if os.path.exists(reports_dir):
+            for filename in os.listdir(reports_dir):
+                file_path = os.path.join(reports_dir, filename)
+                if os.path.isfile(file_path):
+                    if current_time - os.path.getmtime(file_path) > 3600:  # 1 hour
+                        os.remove(file_path)
+                        logger.info(f"🗑️ Cleaned up old report: {filename}")
+                        
+    except Exception as e:
+        logger.warning(f"⚠️ Error during cleanup: {str(e)}")
+
+# -------------------------------
+# HTML TEMPLATE
 # -------------------------------
 chatbot_html = """
 <!DOCTYPE html>
@@ -78,6 +208,9 @@ chatbot_html = """
     --user-bg: #764ba2;
     --border-radius: 22px;
     --indicator-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    --error-color: #e74c3c;
+    --success-color: #27ae60;
+    --warning-color: #f39c12;
 }
 
 body {
@@ -137,79 +270,11 @@ body {
     animation-duration: 18s;
 }
 
-.floating-circle:nth-child(4) {
-    width: 100px;
-    height: 100px;
-    top: 30%;
-    right: 30%;
-    animation-delay: -15s;
-    animation-duration: 22s;
-}
-
-.floating-circle:nth-child(5) {
-    width: 70px;
-    height: 70px;
-    top: 10%;
-    right: 50%;
-    animation-delay: -8s;
-    animation-duration: 19s;
-}
-
 @keyframes float {
     0%, 100% { transform: translateY(0px) rotate(0deg); }
     25% { transform: translateY(-20px) rotate(90deg); }
     50% { transform: translateY(-40px) rotate(180deg); }
     75% { transform: translateY(-20px) rotate(270deg); }
-}
-
-/* Floating Medical Icons */
-.medical-icons {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    pointer-events: none;
-    z-index: 0;
-}
-
-.medical-icon {
-    position: absolute;
-    font-size: 24px;
-    opacity: 0.1;
-    color: white;
-    animation: floatIcon 20s infinite ease-in-out;
-}
-
-.medical-icon:nth-child(1) {
-    top: 15%;
-    left: 5%;
-    animation-delay: 0s;
-}
-
-.medical-icon:nth-child(2) {
-    top: 70%;
-    right: 10%;
-    animation-delay: -7s;
-}
-
-.medical-icon:nth-child(3) {
-    top: 45%;
-    left: 8%;
-    animation-delay: -14s;
-}
-
-.medical-icon:nth-child(4) {
-    top: 25%;
-    right: 25%;
-    animation-delay: -3s;
-}
-
-@keyframes floatIcon {
-    0%, 100% { transform: translateY(0px) translateX(0px); opacity: 0.1; }
-    25% { transform: translateY(-30px) translateX(10px); opacity: 0.2; }
-    50% { transform: translateY(-60px) translateX(-10px); opacity: 0.15; }
-    75% { transform: translateY(-30px) translateX(5px); opacity: 0.1; }
 }
 
 .container {
@@ -248,32 +313,21 @@ body {
     overflow: hidden;
 }
 
-.chat-header::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: -100%;
-    width: 100%;
-    height: 100%;
-    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
-    animation: headerShine 3s infinite;
-}
-
-@keyframes headerShine {
-    0% { left: -100%; }
-    100% { left: 100%; }
-}
-
 .status-dot {
     position: absolute;
     top: 20px;
     right: 20px;
     width: 12px;
     height: 12px;
-    background: #27ae60;
+    background: var(--success-color);
     border-radius: 50%;
     box-shadow: 0 0 0 4px rgba(39, 174, 96, 0.3);
     animation: pulse 2s infinite;
+}
+
+.status-dot.error {
+    background: var(--error-color);
+    box-shadow: 0 0 0 4px rgba(231, 76, 60, 0.3);
 }
 
 @keyframes pulse {
@@ -354,6 +408,18 @@ body {
     border-right: 3px solid rgba(255, 255, 255, 0.3);
 }
 
+.error-message {
+    background: linear-gradient(135deg, #e74c3c, #c0392b);
+    color: #fff;
+    border-left: 3px solid rgba(255, 255, 255, 0.5);
+}
+
+.success-message {
+    background: linear-gradient(135deg, #27ae60, #2ecc71);
+    color: #fff;
+    border-left: 3px solid rgba(255, 255, 255, 0.5);
+}
+
 .disease-indicator {
     display: inline-block;
     width: 15px;
@@ -377,28 +443,6 @@ body {
 .disease-indicator.normal { background-color: #27ae60; }
 .disease-indicator.pneumonia { background-color: #e67e22; }
 .disease-indicator.tb { background-color: #8e44ad; }
-
-.disease-indicator:hover::after {
-    content: attr(data-tooltip);
-    position: absolute;
-    left: 50%; 
-    top: -35px;
-    transform: translateX(-50%);
-    background: #333;
-    color: #fff;
-    font-size: 0.82rem;
-    padding: 6px 12px;
-    border-radius: 8px;
-    box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-    white-space: nowrap;
-    z-index: 10;
-    animation: tooltipFloat 0.3s ease;
-}
-
-@keyframes tooltipFloat {
-    0% { opacity: 0; transform: translateX(-50%) translateY(5px); }
-    100% { opacity: 1; transform: translateX(-50%) translateY(0); }
-}
 
 .chat-input-area {
     border-top: 1px solid rgba(255,255,255,0.13);
@@ -434,29 +478,10 @@ body {
     overflow: hidden;
 }
 
-.action-buttons button::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: -100%;
-    width: 100%;
-    height: 100%;
-    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
-    transition: left 0.5s;
-}
-
-.action-buttons button:hover::before {
-    left: 100%;
-}
-
-.action-buttons button:hover {
+.action-buttons button:hover:not(:disabled) {
     background: linear-gradient(136deg,#667eea 20%,#b191db 100%);
     transform: translateY(-3px) scale(1.05);
     box-shadow: 0 8px 30px rgba(118, 75, 162, 0.2);
-}
-
-.action-buttons button:active {
-    transform: translateY(-1px) scale(1.02);
 }
 
 .action-buttons button:disabled {
@@ -464,12 +489,6 @@ body {
     cursor: not-allowed;
     opacity: 0.6;
     transform: none;
-}
-
-.message-input-bar { 
-    display: flex; 
-    margin-top: 2px;
-    position: relative;
 }
 
 #message-input {
@@ -494,65 +513,6 @@ body {
     background: rgba(255,255,255,0.25);
 }
 
-.typing { 
-    border-left: 3px solid #764ba2; 
-    animation: blink 0.8s steps(1) infinite;
-}
-
-@keyframes blink { 
-    0%,50%,100%{ border-color:transparent;} 
-    25%,75%{ border-color:#764ba2;} 
-}
-
-.doctor-card { 
-    background: var(--card-bg); 
-    padding: 12px; 
-    margin: 6px 0; 
-    border-radius: 13px;
-    transition: transform 0.3s ease, box-shadow 0.3s ease;
-    border-left: 3px solid #764ba2;
-}
-
-.doctor-card:hover {
-    transform: translateX(5px);
-    box-shadow: 0 5px 20px rgba(118, 75, 162, 0.1);
-}
-
-.doctor-card a { 
-    color: #764ba2; 
-    text-decoration: none; 
-    font-weight: 500; 
-}
-
-.doctor-card a:hover { 
-    text-decoration: underline; 
-}
-
-.pdf-preview { 
-    background: var(--card-bg); 
-    padding: 13px; 
-    margin: 6px 0; 
-    border-radius: 13px; 
-    text-align: center;
-    animation: pulseGlow 2s infinite;
-}
-
-@keyframes pulseGlow {
-    0%, 100% { box-shadow: 0 0 5px rgba(118, 75, 162, 0.3); }
-    50% { box-shadow: 0 0 20px rgba(118, 75, 162, 0.6); }
-}
-
-.pdf-preview a { 
-    color: #764ba2; 
-    font-weight: 600; 
-    text-decoration: none; 
-}
-
-.pdf-preview a:hover { 
-    text-decoration: underline; 
-}
-
-/* Loading Animation */
 .loading-dots {
     display: inline-block;
     position: relative;
@@ -605,6 +565,40 @@ body {
     100% { transform: translate(12px, 0); }
 }
 
+.doctor-card { 
+    background: var(--card-bg); 
+    padding: 12px; 
+    margin: 6px 0; 
+    border-radius: 13px;
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+    border-left: 3px solid #764ba2;
+}
+
+.doctor-card:hover {
+    transform: translateX(5px);
+    box-shadow: 0 5px 20px rgba(118, 75, 162, 0.1);
+}
+
+.doctor-card a { 
+    color: #764ba2; 
+    text-decoration: none; 
+    font-weight: 500; 
+}
+
+.pdf-preview { 
+    background: var(--card-bg); 
+    padding: 13px; 
+    margin: 6px 0; 
+    border-radius: 13px; 
+    text-align: center;
+    animation: pulseGlow 2s infinite;
+}
+
+@keyframes pulseGlow {
+    0%, 100% { box-shadow: 0 0 5px rgba(118, 75, 162, 0.3); }
+    50% { box-shadow: 0 0 20px rgba(118, 75, 162, 0.6); }
+}
+
 /* Responsive */
 @media (max-width: 600px) {
     .container { 
@@ -623,49 +617,7 @@ body {
         font-size: 0.95rem; 
         padding: 11px 0;
     }
-    .floating-circle {
-        opacity: 0.5;
-    }
 }
-
-/* Particle Effects */
-.particles {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    pointer-events: none;
-    z-index: 0;
-}
-
-.particle {
-    position: absolute;
-    width: 4px;
-    height: 4px;
-    background: rgba(255, 255, 255, 0.6);
-    border-radius: 50%;
-    animation: particleFloat 10s infinite linear;
-}
-
-@keyframes particleFloat {
-    0% { 
-        transform: translateY(100vh) translateX(0px) scale(0);
-        opacity: 0;
-    }
-    10% {
-        opacity: 1;
-        transform: scale(1);
-    }
-    90% {
-        opacity: 1;
-    }
-    100% { 
-        transform: translateY(-100px) translateX(100px) scale(0);
-        opacity: 0;
-    }
-}
-
 </style>
 </head>
 <body>
@@ -674,25 +626,12 @@ body {
     <div class="floating-circle"></div>
     <div class="floating-circle"></div>
     <div class="floating-circle"></div>
-    <div class="floating-circle"></div>
-    <div class="floating-circle"></div>
 </div>
-
-<!-- Floating Medical Icons -->
-<div class="medical-icons">
-    <div class="medical-icon">⚕</div>
-    <div class="medical-icon">🫁</div>
-    <div class="medical-icon">💊</div>
-    <div class="medical-icon">🩺</div>
-</div>
-
-<!-- Particles -->
-<div class="particles" id="particles"></div>
 
 <div class="container">
     <div class="chat-header">
         Multi-Chronic Disease Detection Chatbot
-        <div class="status-dot"></div>
+        <div class="status-dot" id="status-dot"></div>
     </div>
     <div class="chat-window" id="chat-window"></div>
     <div class="chat-input-area">
@@ -709,23 +648,6 @@ body {
 </div>
 
 <script>
-// Create floating particles
-function createParticles() {
-    const particlesContainer = document.getElementById('particles');
-    
-    for (let i = 0; i < 50; i++) {
-        const particle = document.createElement('div');
-        particle.className = 'particle';
-        particle.style.left = Math.random() * 100 + '%';
-        particle.style.animationDelay = Math.random() * 10 + 's';
-        particle.style.animationDuration = (Math.random() * 10 + 10) + 's';
-        particlesContainer.appendChild(particle);
-    }
-}
-
-// Initialize particles
-createParticles();
-
 function getDiseaseIndicator(disease) {
     const indicators = {
         "COPD": {class: "copd", text: "COPD - Chronic Obstructive Pulmonary Disease"},
@@ -743,10 +665,15 @@ const fileInput = document.getElementById('file-input');
 const doctorsBtn = document.getElementById('find-doctors-btn');
 const reportBtn = document.getElementById('download-report-btn');
 const messageInput = document.getElementById('message-input');
+const statusDot = document.getElementById('status-dot');
 
-function addMessage(message, sender='bot') {
+function addMessage(message, sender='bot', type='normal') {
     const div = document.createElement('div');
-    div.className = `message ${sender}-message`;
+    let className = `message ${sender}-message`;
+    if (type === 'error') className += ' error-message';
+    if (type === 'success') className += ' success-message';
+    
+    div.className = className;
     div.innerHTML = message;
     chatWindow.appendChild(div);
     chatWindow.scrollTop = chatWindow.scrollHeight;
@@ -762,6 +689,43 @@ function addLoadingMessage() {
     addMessage(loadingHtml, 'bot');
 }
 
+function removeLastMessage() {
+    const messages = chatWindow.querySelectorAll('.message');
+    if (messages.length > 0) {
+        const lastMessage = messages[messages.length - 1];
+        if (lastMessage.innerHTML.includes('loading-dots')) {
+            lastMessage.remove();
+        }
+    }
+}
+
+function updateStatusDot(isHealthy) {
+    if (isHealthy) {
+        statusDot.classList.remove('error');
+    } else {
+        statusDot.classList.add('error');
+    }
+}
+
+// Check system health
+async function checkHealth() {
+    try {
+        const response = await fetch('/health');
+        const data = await response.json();
+        updateStatusDot(data.status === 'healthy' && data.models_loaded);
+        
+        if (!data.models_loaded) {
+            addMessage("⚠️ <strong>System Warning:</strong> AI models are not loaded. Some features may be unavailable.", 'bot', 'error');
+        }
+    } catch (error) {
+        updateStatusDot(false);
+        addMessage("❌ <strong>System Error:</strong> Cannot connect to server. Please refresh the page.", 'bot', 'error');
+    }
+}
+
+// Initial health check
+checkHealth();
+
 // Welcome message with enhanced styling
 addMessage(`
     <strong>Hello! Welcome to our AI Medical Assistant</strong><br>
@@ -772,30 +736,50 @@ addMessage(`
 `, 'bot');
 
 // Upload X-ray with enhanced feedback
-uploadBtn.addEventListener('click', ()=>fileInput.click());
+uploadBtn.addEventListener('click', () => fileInput.click());
 
-fileInput.addEventListener('change', async(event)=>{
+fileInput.addEventListener('change', async(event) => {
     const file = event.target.files[0];
-    if(!file) return;
+    if (!file) return;
+    
+    // Validate file type
+    const validTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/bmp', 'image/tiff'];
+    if (!validTypes.includes(file.type)) {
+        addMessage("❌ <strong>Invalid File Type:</strong> Please upload a valid image file (JPEG, PNG, GIF, BMP, or TIFF).", 'bot', 'error');
+        return;
+    }
+    
+    // Validate file size (16MB max)
+    if (file.size > 16 * 1024 * 1024) {
+        addMessage("❌ <strong>File Too Large:</strong> Please upload an image smaller than 16MB.", 'bot', 'error');
+        return;
+    }
     
     addMessage(`📤 <strong>Uploading:</strong> ${file.name}<br><span style='font-size:0.9em;color:#767c8b;'>File size: ${(file.size/1024/1024).toFixed(2)} MB</span>`, 'bot');
     
     const formData = new FormData();
-    formData.append('file',file);
+    formData.append('file', file);
 
     try {
         addLoadingMessage();
-        const response = await fetch('/predict',{method:'POST',body:formData});
+        uploadBtn.disabled = true;
+        uploadBtn.textContent = 'Processing...';
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
+        
+        const response = await fetch('/predict', {
+            method: 'POST',
+            body: formData,
+            signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
         const data = await response.json();
         
-        // Remove loading message
-        const messages = chatWindow.querySelectorAll('.message');
-        const lastMessage = messages[messages.length - 1];
-        if (lastMessage.innerHTML.includes('loading-dots')) {
-            lastMessage.remove();
-        }
+        removeLastMessage();
         
-        if(data.status==='success'){
+        if (data.status === 'success') {
             const indicatorInfo = getDiseaseIndicator(data.disease);
             addMessage(
                 `<span class="disease-indicator ${indicatorInfo.class}" data-tooltip="${indicatorInfo.text}"></span>
@@ -804,20 +788,28 @@ fileInput.addEventListener('change', async(event)=>{
                  <span style='color:#767c8b;font-size:.9em;'>
                     Hover over the colored indicator for more information
                  </span>
-                 `,'bot');
-            doctorsBtn.disabled=false;
-            reportBtn.disabled=false;
-            messageInput.disabled=false;
+                `, 'bot', 'success');
+            doctorsBtn.disabled = false;
+            reportBtn.disabled = false;
+            messageInput.disabled = false;
         } else {
-            addMessage(`❌ <strong>Error:</strong> ${data.error}`, 'bot');
+            addMessage(`❌ <strong>Error:</strong> ${data.error}`, 'bot', 'error');
         }
-    } catch(err){
-        addMessage("⚠️ <strong>Connection Failed:</strong> Please check your internet connection and try again.", 'bot');
+    } catch (err) {
+        removeLastMessage();
+        if (err.name === 'AbortError') {
+            addMessage("⏱️ <strong>Timeout:</strong> Processing took too long. Please try with a smaller image or try again later.", 'bot', 'error');
+        } else {
+            addMessage("⚠️ <strong>Connection Failed:</strong> Please check your internet connection and try again.", 'bot', 'error');
+        }
+    } finally {
+        uploadBtn.disabled = false;
+        uploadBtn.textContent = 'Upload X-ray';
     }
 });
 
 // Enhanced report download
-reportBtn.addEventListener('click', ()=>{
+reportBtn.addEventListener('click', () => {
     addMessage(`
         <div class='pdf-preview'>
             📄 <strong>Generating comprehensive medical report...</strong><br>
@@ -828,39 +820,39 @@ reportBtn.addEventListener('click', ()=>{
 });
 
 // Enhanced doctor finder
-doctorsBtn.addEventListener('click',()=>{
-    addMessage("🔍 <strong>Locating nearby medical specialists...</strong><br><span style='font-size:0.9em;color:#767c8b;'>Searching for respiratory and pulmonary experts in your area</span>",'bot');
+doctorsBtn.addEventListener('click', () => {
+    addMessage("🔍 <strong>Locating nearby medical specialists...</strong><br><span style='font-size:0.9em;color:#767c8b;'>Searching for respiratory and pulmonary experts in your area</span>", 'bot');
     
-    if(!navigator.geolocation){
-        addMessage("❌ <strong>Location Error:</strong> Geolocation is not supported by your browser. Please enable location services.", 'bot');
+    if (!navigator.geolocation) {
+        addMessage("❌ <strong>Location Error:</strong> Geolocation is not supported by your browser. Please enable location services.", 'bot', 'error');
         return;
     }
     
-    navigator.geolocation.getCurrentPosition(async(pos)=>{
-        const {latitude,longitude}=pos.coords;
-        try{
-            const resp = await fetch('/get_doctors',{
-                method:'POST',
-                headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({latitude,longitude})
+    navigator.geolocation.getCurrentPosition(async(pos) => {
+        const {latitude, longitude} = pos.coords;
+        try {
+            const resp = await fetch('/get_doctors', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({latitude, longitude})
             });
             const data = await resp.json();
-            if(data.doctors && data.doctors.length>0){
-                let html="🏥 <strong>Found Nearby Specialists:</strong><br><br>";
-                data.doctors.slice(0,5).forEach((doc, index)=>{
-                    html+=`<div class='doctor-card'>
+            if (data.doctors && data.doctors.length > 0) {
+                let html = "🏥 <strong>Found Nearby Specialists:</strong><br><br>";
+                data.doctors.slice(0, 5).forEach((doc, index) => {
+                    html += `<div class='doctor-card'>
                         <strong>${index + 1}. ${doc.name}</strong><br>
                         <a href='https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(doc.location)}' target='_blank'>
                             📍 ${doc.location}
                         </a>
                     </div>`;
                 });
-                addMessage(html,'bot');
+                addMessage(html, 'bot');
             } else {
-                addMessage("❌ <strong>No Results:</strong> No medical specialists found in your immediate area. Try expanding your search radius or consult your local healthcare directory.",'bot');
+                addMessage("❌ <strong>No Results:</strong> No medical specialists found in your immediate area. Try expanding your search radius or consult your local healthcare directory.", 'bot', 'error');
             }
-        }catch(err){
-            addMessage("⚠️ <strong>Search Failed:</strong> Unable to fetch doctor information. Please try again later.",'bot');
+        } catch (err) {
+            addMessage("⚠️ <strong>Search Failed:</strong> Unable to fetch doctor information. Please try again later.", 'bot', 'error');
         }
     }, (error) => {
         let errorMsg = "❌ <strong>Location Access Denied:</strong> ";
@@ -878,7 +870,7 @@ doctorsBtn.addEventListener('click',()=>{
                 errorMsg += "An unknown error occurred.";
                 break;
         }
-        addMessage(errorMsg, 'bot');
+        addMessage(errorMsg, 'bot', 'error');
     });
 });
 
@@ -900,146 +892,379 @@ messageInput.addEventListener('keypress', (e) => {
 </script>
 </body>
 </html>
-
 """
 
 # -------------------------------
-# Utilities
-# -------------------------------
-def preprocess_image(image_path):
-    img = cv2.imread(image_path)
-    img = cv2.resize(img,(224,224))
-    img = img/255.0
-    img = np.expand_dims(img,axis=0)
-    return img
-
-# -------------------------------
-# Routes
+# ROUTES
 # -------------------------------
 @app.route("/")
 def index(): 
     return render_template_string(chatbot_html)
 
-@app.route("/predict",methods=["POST"])
+@app.route("/health")
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        "status": "healthy",
+        "models_loaded": models_loaded,
+        "timestamp": datetime.now().isoformat()
+    })
+
+@app.route("/predict", methods=["POST"])
 def predict():
-    if not all([cnn_model,rf_model,feature_extractor]):
-        return jsonify({"status":"error","error":"Models not loaded."}),500
+    """Enhanced prediction endpoint with better error handling"""
+    if not models_loaded:
+        logger.error("Models not loaded")
+        return jsonify({"status": "error", "error": "AI models are not loaded. Please try again later."}), 503
+    
     if "file" not in request.files: 
-        return jsonify({"status":"error","error":"No file part"}),400
-    file=request.files["file"]
-    if file.filename=='': 
-        return jsonify({"status":"error","error":"No selected file"}),400
+        return jsonify({"status": "error", "error": "No file uploaded"}), 400
+    
+    file = request.files["file"]
+    if file.filename == '': 
+        return jsonify({"status": "error", "error": "No file selected"}), 400
+    
+    if not allowed_file(file.filename):
+        return jsonify({"status": "error", "error": "Invalid file type. Please upload an image file."}), 400
+    
     try:
-        uploads_dir=os.path.join(os.getcwd(),'uploads')
-        os.makedirs(uploads_dir,exist_ok=True)
-        xray_path=os.path.join(uploads_dir,file.filename)
+        # Create uploads directory
+        uploads_dir = os.path.join(os.getcwd(), 'uploads')
+        os.makedirs(uploads_dir, exist_ok=True)
+        
+        # Secure filename
+        filename = secure_filename(file.filename)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_")
+        filename = timestamp + filename
+        xray_path = os.path.join(uploads_dir, filename)
+        
+        logger.info(f"🔄 Saving uploaded file: {filename}")
         file.save(xray_path)
-        img=preprocess_image(xray_path)
-        features=feature_extractor.predict(img).reshape(1,-1)
-        rf_prediction=rf_model.predict(features)[0]
-        disease=DISEASE_CLASSES[int(rf_prediction)]
-        session['disease']=disease
-        session['xray_path']=xray_path
-        return jsonify({"status":"success","disease":disease})
+        
+        # Preprocess image
+        logger.info("🔄 Starting image preprocessing...")
+        img = preprocess_image(xray_path)
+        
+        # Extract features
+        logger.info("🔄 Extracting features...")
+        features = feature_extractor.predict(img, verbose=0).reshape(1, -1)
+        
+        # Make prediction
+        logger.info("🔄 Making prediction...")
+        rf_prediction = rf_model.predict(features)[0]
+        disease = DISEASE_CLASSES[int(rf_prediction)]
+        
+        # Store in session
+        session['disease'] = disease
+        session['xray_path'] = xray_path
+        session['prediction_time'] = datetime.now().isoformat()
+        
+        logger.info(f"✅ Prediction successful: {disease}")
+        
+        # Cleanup old files in background
+        threading.Thread(target=cleanup_old_files, daemon=True).start()
+        
+        return jsonify({
+            "status": "success",
+            "disease": disease,
+            "confidence": "high",  # You can add actual confidence scores if available
+            "timestamp": session['prediction_time']
+        })
+        
     except Exception as e:
-        logging.error(f"Prediction error: {e}")
-        return jsonify({"status":"error","error":str(e)}),500
+        logger.error(f"❌ Prediction error: {str(e)}")
+        logger.error(traceback.format_exc())
+        
+        error_msg = "An error occurred during image analysis. Please try again."
+        if "image" in str(e).lower():
+            error_msg = "Invalid image format. Please upload a clear X-ray image."
+        elif "memory" in str(e).lower():
+            error_msg = "Server is busy. Please try again in a few moments."
+        
+        return jsonify({"status": "error", "error": error_msg}), 500
 
 @app.route("/get_doctors", methods=["POST"])
 def get_doctors():
-    data = request.get_json()
-    latitude = data.get("latitude")
-    longitude = data.get("longitude")
-    if latitude is None or longitude is None:
-        return jsonify({"error": "Location not provided"}), 400
-
-    url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
-    params = {
-        "location": f"{latitude},{longitude}",
-        "radius": 15000,  # 15 km radius
-        "type": "doctor",
-        "keyword": "pulmonologist",
-        "key": GOMAPS_API_KEY
-    }
-
+    """Enhanced doctor finder with better error handling"""
     try:
-        response = requests.get(url, params=params, verify=False)
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No location data provided"}), 400
+            
+        latitude = data.get("latitude")
+        longitude = data.get("longitude")
+        
+        if latitude is None or longitude is None:
+            return jsonify({"error": "Invalid location coordinates"}), 400
+
+        # Check if API key is configured
+        if GOMAPS_API_KEY == "YOUR_GOMAPS_API_KEY":
+            logger.warning("Google Maps API key not configured")
+            # Return mock data for demo purposes
+            mock_doctors = [
+                {"name": "Dr. Smith Pulmonology Clinic", "location": "123 Medical Center Dr, City"},
+                {"name": "Respiratory Care Associates", "location": "456 Health Plaza, City"},
+                {"name": "City General Hospital - Pulmonology", "location": "789 Hospital Ave, City"}
+            ]
+            return jsonify({"doctors": mock_doctors})
+
+        url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+        params = {
+            "location": f"{latitude},{longitude}",
+            "radius": 15000,  # 15 km radius
+            "type": "doctor",
+            "keyword": "pulmonologist respiratory",
+            "key": GOMAPS_API_KEY
+        }
+
+        logger.info(f"🔄 Searching for doctors near {latitude}, {longitude}")
+        response = requests.get(url, params=params, verify=False, timeout=10)
         response.raise_for_status()
+        
         results = response.json().get("results", [])
-        doctors = [{"name": r.get("name"), "location": r.get("vicinity", "Address not available")} for r in results]
+        doctors = []
+        
+        for r in results:
+            doctor_info = {
+                "name": r.get("name", "Unknown Doctor"),
+                "location": r.get("vicinity", "Address not available"),
+                "rating": r.get("rating", "N/A"),
+                "place_id": r.get("place_id", "")
+            }
+            doctors.append(doctor_info)
+        
+        logger.info(f"✅ Found {len(doctors)} doctors")
         return jsonify({"doctors": doctors})
+        
+    except requests.exceptions.Timeout:
+        logger.error("Google Maps API request timed out")
+        return jsonify({"doctors": [], "error": "Search timed out. Please try again."}), 408
     except requests.exceptions.RequestException as e:
-        logging.error(f"Google Maps API request failed: {e}")
-        return jsonify({"doctors": [], "error": "Failed to fetch doctors"}), 500
+        logger.error(f"Google Maps API request failed: {e}")
+        return jsonify({"doctors": [], "error": "Unable to search for doctors at this time."}), 503
+    except Exception as e:
+        logger.error(f"Unexpected error in get_doctors: {e}")
+        return jsonify({"doctors": [], "error": "An unexpected error occurred."}), 500
 
 @app.route("/generate_report")
 def generate_report():
+    """Enhanced report generation with better formatting"""
     disease = session.get('disease')
     xray_path = session.get('xray_path')
-    if not disease or not xray_path:
-        return "No data available to generate report.", 400
+    prediction_time = session.get('prediction_time')
+    
+    if not disease:
+        return "No diagnosis data available. Please upload an X-ray first.", 400
 
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", "B", 16)
-    pdf.cell(0, 10, "Multi-Chronic Disease Detection Report", ln=True, align="C")
-    pdf.ln(10)
-
-    pdf.set_font("Arial", "", 12)
-    pdf.cell(0, 10, f"Disease Detected: {disease.upper()}", ln=True)
-    pdf.ln(5)
-    
-    # Add disease description instead of emoji
-    disease_descriptions = {
-        "COPD": "Chronic Obstructive Pulmonary Disease",
-        "fibrosis": "Pulmonary Fibrosis",
-        "normal": "Normal/Healthy Lungs",
-        "pneumonia": "Pneumonia Infection",
-        "pulmonary tb": "Pulmonary Tuberculosis"
-    }
-    
-    description = disease_descriptions.get(disease, "Unknown condition")
-    pdf.cell(0, 10, f"Description: {description}", ln=True)
-    pdf.ln(10)
-
-    # Insert X-ray image
-    if os.path.exists(xray_path):
-        pdf.image(xray_path, x=30, w=150)
-        pdf.ln(100)  # Add space after image
-    
-    # Add recommendations
-    pdf.set_font("Arial", "B", 12)
-    pdf.cell(0, 10, "Recommendations:", ln=True)
-    pdf.ln(5)
-    
-    pdf.set_font("Arial", "", 10)
-    recommendations = {
-        "normal": "Continue maintaining healthy lifestyle. Regular check-ups recommended.",
-        "COPD": "Immediate consultation with pulmonologist required. Avoid smoking.",
-        "fibrosis": "Urgent medical attention needed. Consult respiratory specialist.",
-        "pneumonia": "Seek immediate medical treatment. Complete prescribed antibiotics.",
-        "pulmonary tb": "Immediate isolation and medical care required. Follow treatment protocol."
-    }
-    
-    recommendation = recommendations.get(disease, "Consult healthcare professional for proper diagnosis.")
-    pdf.multi_cell(0, 5, recommendation)
-    pdf.ln(10)
-    
-    # Add disclaimer
-    pdf.set_font("Arial", "I", 9)
-    disclaimer = "This AI analysis is for informational purposes only. Please consult qualified healthcare professionals for proper medical diagnosis and treatment."
-    pdf.multi_cell(0, 5, disclaimer)
-
-    # Save PDF temporarily
-    reports_dir = os.path.join(os.getcwd(), 'reports')
-    os.makedirs(reports_dir, exist_ok=True)
-    pdf_path = os.path.join(reports_dir, f"medical_report_{disease.replace(' ', '_')}.pdf")
-    pdf.output(pdf_path)
-
-    return send_file(pdf_path, as_attachment=True, download_name=f"medical_report_{disease.replace(' ', '_')}.pdf")
+    try:
+        # Create reports directory
+        reports_dir = os.path.join(os.getcwd(), 'reports')
+        os.makedirs(reports_dir, exist_ok=True)
+        
+        pdf = FPDF()
+        pdf.add_page()
+        
+        # Header
+        pdf.set_font("Arial", "B", 18)
+        pdf.cell(0, 15, "Medical AI Analysis Report", ln=True, align="C")
+        pdf.ln(5)
+        
+        # Separator line
+        pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+        pdf.ln(10)
+        
+        # Patient Information Section
+        pdf.set_font("Arial", "B", 14)
+        pdf.cell(0, 10, "Analysis Summary", ln=True)
+        pdf.ln(5)
+        
+        pdf.set_font("Arial", "", 12)
+        pdf.cell(0, 8, f"Analysis Date: {datetime.now().strftime('%B %d, %Y at %I:%M %p')}", ln=True)
+        if prediction_time:
+            pdf.cell(0, 8, f"Processing Time: {prediction_time[:16].replace('T', ' ')}", ln=True)
+        pdf.ln(5)
+        
+        # Diagnosis Section
+        pdf.set_font("Arial", "B", 14)
+        pdf.cell(0, 10, "AI Diagnosis", ln=True)
+        pdf.ln(3)
+        
+        # Disease description
+        disease_descriptions = {
+            "COPD": ("Chronic Obstructive Pulmonary Disease", "A progressive lung disease that makes breathing difficult."),
+            "fibrosis": ("Pulmonary Fibrosis", "Scarring of lung tissue that affects breathing."),
+            "normal": ("Normal/Healthy Lungs", "No significant abnormalities detected."),
+            "pneumonia": ("Pneumonia", "Infection that inflames air sacs in lungs."),
+            "pulmonary tb": ("Pulmonary Tuberculosis", "Bacterial infection primarily affecting the lungs.")
+        }
+        
+        title, description = disease_descriptions.get(disease, ("Unknown Condition", "Further evaluation needed."))
+        
+        pdf.set_font("Arial", "B", 12)
+        pdf.cell(0, 8, f"Detected Condition: {title.upper()}", ln=True)
+        pdf.ln(3)
+        
+        pdf.set_font("Arial", "", 11)
+        pdf.multi_cell(0, 6, f"Description: {description}")
+        pdf.ln(8)
+        
+        # Insert X-ray image if available
+        if xray_path and os.path.exists(xray_path):
+            try:
+                pdf.set_font("Arial", "B", 12)
+                pdf.cell(0, 8, "Analyzed X-ray Image:", ln=True)
+                pdf.ln(5)
+                pdf.image(xray_path, x=30, w=150, h=100)
+                pdf.ln(105)
+            except Exception as e:
+                logger.warning(f"Could not insert image in PDF: {e}")
+                pdf.cell(0, 8, "X-ray image could not be included in report.", ln=True)
+                pdf.ln(10)
+        
+        # Recommendations Section
+        pdf.set_font("Arial", "B", 14)
+        pdf.cell(0, 10, "Recommendations", ln=True)
+        pdf.ln(3)
+        
+        pdf.set_font("Arial", "", 11)
+        recommendations = {
+            "normal": [
+                "Continue maintaining a healthy lifestyle",
+                "Regular exercise and balanced diet recommended",
+                "Schedule routine medical check-ups",
+                "Avoid smoking and exposure to pollutants"
+            ],
+            "COPD": [
+                "URGENT: Consult a pulmonologist immediately",
+                "Avoid smoking and secondhand smoke",
+                "Consider pulmonary rehabilitation programs",
+                "Monitor symptoms and seek emergency care if breathing worsens"
+            ],
+            "fibrosis": [
+                "URGENT: Seek immediate medical attention",
+                "Consult with a respiratory specialist",
+                "Discuss treatment options including medications",
+                "Consider joining support groups"
+            ],
+            "pneumonia": [
+                "URGENT: Seek immediate medical treatment",
+                "Complete full course of prescribed antibiotics",
+                "Rest and stay hydrated",
+                "Monitor symptoms and return if condition worsens"
+            ],
+            "pulmonary tb": [
+                "CRITICAL: Immediate isolation and medical care required",
+                "Follow strict medication protocol",
+                "Notify close contacts for screening",
+                "Regular follow-up appointments essential"
+            ]
+        }
+        
+        disease_recommendations = recommendations.get(disease, ["Consult healthcare professional for proper evaluation"])
+        
+        for i, rec in enumerate(disease_recommendations, 1):
+            pdf.cell(0, 6, f"{i}. {rec}", ln=True)
+        pdf.ln(10)
+        
+        # Disclaimer Section
+        pdf.set_font("Arial", "B", 12)
+        pdf.cell(0, 8, "Important Disclaimer", ln=True)
+        pdf.ln(3)
+        
+        pdf.set_font("Arial", "I", 10)
+        disclaimer_text = (
+            "This AI analysis is provided for informational purposes only and should not be considered "
+            "as a substitute for professional medical diagnosis, treatment, or advice. Always consult "
+            "with qualified healthcare professionals for proper medical evaluation and treatment decisions. "
+            "This system has limitations and may not detect all conditions or may produce false results. "
+            "Emergency situations require immediate medical attention regardless of AI analysis results."
+        )
+        pdf.multi_cell(0, 5, disclaimer_text)
+        pdf.ln(10)
+        
+        # Footer
+        pdf.set_font("Arial", "", 8)
+        pdf.cell(0, 5, f"Generated by Multi-Chronic Disease Detection System - {datetime.now().strftime('%Y')}", ln=True, align="C")
+        
+        # Save PDF
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        pdf_filename = f"medical_report_{disease.replace(' ', '_')}_{timestamp}.pdf"
+        pdf_path = os.path.join(reports_dir, pdf_filename)
+        pdf.output(pdf_path)
+        
+        logger.info(f"✅ Report generated: {pdf_filename}")
+        
+        return send_file(
+            pdf_path, 
+            as_attachment=True, 
+            download_name=pdf_filename,
+            mimetype='application/pdf'
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Error generating report: {str(e)}")
+        logger.error(traceback.format_exc())
+        return "Error generating report. Please try again.", 500
 
 # -------------------------------
-# Run App
+# ERROR HANDLERS
+# -------------------------------
+@app.errorhandler(413)
+def too_large(e):
+    return jsonify({"status": "error", "error": "File too large. Maximum size is 16MB."}), 413
+
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({"status": "error", "error": "Endpoint not found."}), 404
+
+@app.errorhandler(500)
+def server_error(e):
+    logger.error(f"Server error: {str(e)}")
+    return jsonify({"status": "error", "error": "Internal server error. Please try again."}), 500
+
+# -------------------------------
+# APPLICATION STARTUP
+# -------------------------------
+@app.before_first_request
+def startup():
+    """Initialize application on first request"""
+    logger.info("🚀 Starting Multi-Chronic Disease Detection System...")
+    
+    # Load models in background thread
+    def load_models_background():
+        success = load_models()
+        if success:
+            logger.info("🎉 System ready for predictions!")
+        else:
+            logger.error("❌ System startup failed - models not loaded")
+    
+    # Start model loading in background
+    threading.Thread(target=load_models_background, daemon=True).start()
+    
+    # Start cleanup scheduler
+    def periodic_cleanup():
+        while True:
+            time.sleep(3600)  # Run every hour
+            cleanup_old_files()
+    
+    threading.Thread(target=periodic_cleanup, daemon=True).start()
+
+# -------------------------------
+# RUN APPLICATION
 # -------------------------------
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Load models at startup for development
+    load_models()
+    
+    port = int(os.environ.get("PORT", 5000))
+    debug_mode = os.environ.get("FLASK_ENV", "production") == "development"
+    
+    logger.info(f"🌐 Starting server on port {port}")
+    logger.info(f"🔧 Debug mode: {debug_mode}")
+    
+    app.run(
+        host="0.0.0.0", 
+        port=port, 
+        debug=debug_mode,
+        threaded=True
+    )
