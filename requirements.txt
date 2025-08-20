@@ -3,8 +3,8 @@ flask-cors==6.0.1
 flask-ngrok==0.0.25
 gunicorn==23.0.0
 
-tensorflow-cpu==2.10.0
-keras==2.10.0
+tensorflow-cpu==2.11.0
+keras==2.11.0
 opencv-python-headless==4.11.0.86
 numpy==1.26.4
 pandas==2.2.3
