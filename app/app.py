@@ -21,13 +21,19 @@ app.secret_key = 'your_super_secret_key'
 # -------------------------------
 # CONFIGURATION
 # -------------------------------
+# -------------------------------
+# CONFIGURATION
+# -------------------------------
 try:
     # Base directory where this file is running
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-    # Model paths inside "models" folder
-    cnn_model_path = os.path.join(BASE_DIR, "models", "densenet_new_finetuned_v3.h5")
-    rf_model_path = os.path.join(BASE_DIR, "models", "fast_rf_xgb_stack2.pkl")
+    # Move up one level to repo root
+    ROOT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
+
+    # Model paths
+    cnn_model_path = os.path.join(ROOT_DIR, "models", "densenet_new_finetuned_v3.h5")
+    rf_model_path = os.path.join(ROOT_DIR, "models", "fast_rf_xgb_stack2.pkl")
 
     # Load models
     cnn_model = tf.keras.models.load_model(cnn_model_path)
