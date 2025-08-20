@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify, send_file, render_template_string, se
 import tensorflow as tf
 import numpy as np
 import cv2
+from flask_cors import CORS
 import requests
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
@@ -17,7 +18,7 @@ logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 app.secret_key = 'your_super_secret_key'
-
+CORS(app)
 # -------------------------------
 # CONFIGURATION
 # -------------------------------
