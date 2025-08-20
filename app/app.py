@@ -22,12 +22,29 @@ app.secret_key = 'your_super_secret_key'
 # CONFIGURATION
 # -------------------------------
 try:
-    cnn_model = tf.keras.models.load_model(r"F:\Multi_Chronic_Disease_Detection\model\densenet_new_finetuned_v3.h5")  
-    rf_model = joblib.load(r"F:\Multi_Chronic_Disease_Detection\notebooks\fast_rf_xgb_stack2.pkl")
-    feature_extractor = Model(inputs=cnn_model.input, outputs=cnn_model.get_layer("global_average_pooling2d").output)
+    # Base directory where this file is running
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+    # Model paths inside "models" folder
+    cnn_model_path = os.path.join(BASE_DIR, "models", "densenet_new_finetuned_v3.h5")
+    rf_model_path = os.path.join(BASE_DIR, "models", "fast_rf_xgb_stack2.pkl")
+
+    # Load models
+    cnn_model = tf.keras.models.load_model(cnn_model_path)
+    rf_model = joblib.load(rf_model_path)
+
+    # Create feature extractor from CNN
+    feature_extractor = Model(
+        inputs=cnn_model.input,
+        outputs=cnn_model.get_layer("global_average_pooling2d").output
+    )
+
+    logging.info("✅ Models loaded successfully")
+
 except Exception as e:
-    logging.error(f"Error loading models: {e}")
+    logging.error(f"❌ Error loading models: {e}")
     cnn_model = rf_model = feature_extractor = None
+
 
 GOMAPS_API_KEY = "YOUR_GOMAPS_API_KEY"
 DISEASE_CLASSES = ["COPD", "fibrosis", "normal", "pneumonia", "pulmonary tb"]
