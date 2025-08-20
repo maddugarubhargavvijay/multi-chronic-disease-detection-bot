@@ -15,6 +15,7 @@ import traceback
 from datetime import datetime
 import threading
 import time
+import atexit
 
 # Disable SSL warnings
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
@@ -44,6 +45,7 @@ cnn_model = None
 rf_model = None
 feature_extractor = None
 models_loaded = False
+startup_complete = False
 
 # -------------------------------
 # MODEL LOADING WITH OPTIMIZATION
@@ -186,8 +188,35 @@ def cleanup_old_files():
     except Exception as e:
         logger.warning(f"⚠️ Error during cleanup: {str(e)}")
 
+def ensure_startup():
+    """Ensure startup tasks are completed"""
+    global startup_complete
+    
+    if not startup_complete:
+        logger.info("🚀 Starting Multi-Chronic Disease Detection System...")
+        
+        # Load models in background thread
+        def load_models_background():
+            success = load_models()
+            if success:
+                logger.info("🎉 System ready for predictions!")
+            else:
+                logger.error("❌ System startup failed - models not loaded")
+        
+        # Start model loading in background
+        threading.Thread(target=load_models_background, daemon=True).start()
+        
+        # Start cleanup scheduler
+        def periodic_cleanup():
+            while True:
+                time.sleep(3600)  # Run every hour
+                cleanup_old_files()
+        
+        threading.Thread(target=periodic_cleanup, daemon=True).start()
+        startup_complete = True
+
 # -------------------------------
-# HTML TEMPLATE
+# HTML TEMPLATE (same as before)
 # -------------------------------
 chatbot_html = """
 <!DOCTYPE html>
@@ -225,7 +254,6 @@ body {
     overflow: hidden;
 }
 
-/* Floating Background Elements */
 .floating-elements {
     position: fixed;
     top: 0;
@@ -599,7 +627,6 @@ body {
     50% { box-shadow: 0 0 20px rgba(118, 75, 162, 0.6); }
 }
 
-/* Responsive */
 @media (max-width: 600px) {
     .container { 
         max-width: 95vw; 
@@ -621,7 +648,6 @@ body {
 </style>
 </head>
 <body>
-<!-- Floating Background Elements -->
 <div class="floating-elements">
     <div class="floating-circle"></div>
     <div class="floating-circle"></div>
@@ -707,7 +733,6 @@ function updateStatusDot(isHealthy) {
     }
 }
 
-// Check system health
 async function checkHealth() {
     try {
         const response = await fetch('/health');
@@ -715,7 +740,7 @@ async function checkHealth() {
         updateStatusDot(data.status === 'healthy' && data.models_loaded);
         
         if (!data.models_loaded) {
-            addMessage("⚠️ <strong>System Warning:</strong> AI models are not loaded. Some features may be unavailable.", 'bot', 'error');
+            addMessage("⚠️ <strong>System Warning:</strong> AI models are loading. Please wait a moment before uploading images.", 'bot', 'error');
         }
     } catch (error) {
         updateStatusDot(false);
@@ -723,10 +748,8 @@ async function checkHealth() {
     }
 }
 
-// Initial health check
 checkHealth();
 
-// Welcome message with enhanced styling
 addMessage(`
     <strong>Hello! Welcome to our AI Medical Assistant</strong><br>
     <span style='color:#767c8b;font-size:.95em;'>
@@ -735,21 +758,18 @@ addMessage(`
     </span>
 `, 'bot');
 
-// Upload X-ray with enhanced feedback
 uploadBtn.addEventListener('click', () => fileInput.click());
 
 fileInput.addEventListener('change', async(event) => {
     const file = event.target.files[0];
     if (!file) return;
     
-    // Validate file type
     const validTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/bmp', 'image/tiff'];
     if (!validTypes.includes(file.type)) {
         addMessage("❌ <strong>Invalid File Type:</strong> Please upload a valid image file (JPEG, PNG, GIF, BMP, or TIFF).", 'bot', 'error');
         return;
     }
     
-    // Validate file size (16MB max)
     if (file.size > 16 * 1024 * 1024) {
         addMessage("❌ <strong>File Too Large:</strong> Please upload an image smaller than 16MB.", 'bot', 'error');
         return;
@@ -766,7 +786,7 @@ fileInput.addEventListener('change', async(event) => {
         uploadBtn.textContent = 'Processing...';
         
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
+        const timeoutId = setTimeout(() => controller.abort(), 120000);
         
         const response = await fetch('/predict', {
             method: 'POST',
@@ -808,7 +828,6 @@ fileInput.addEventListener('change', async(event) => {
     }
 });
 
-// Enhanced report download
 reportBtn.addEventListener('click', () => {
     addMessage(`
         <div class='pdf-preview'>
@@ -819,7 +838,6 @@ reportBtn.addEventListener('click', () => {
     `, 'bot');
 });
 
-// Enhanced doctor finder
 doctorsBtn.addEventListener('click', () => {
     addMessage("🔍 <strong>Locating nearby medical specialists...</strong><br><span style='font-size:0.9em;color:#767c8b;'>Searching for respiratory and pulmonary experts in your area</span>", 'bot');
     
@@ -849,32 +867,16 @@ doctorsBtn.addEventListener('click', () => {
                 });
                 addMessage(html, 'bot');
             } else {
-                addMessage("❌ <strong>No Results:</strong> No medical specialists found in your immediate area. Try expanding your search radius or consult your local healthcare directory.", 'bot', 'error');
+                addMessage("❌ <strong>No Results:</strong> No medical specialists found in your immediate area.", 'bot', 'error');
             }
         } catch (err) {
             addMessage("⚠️ <strong>Search Failed:</strong> Unable to fetch doctor information. Please try again later.", 'bot', 'error');
         }
     }, (error) => {
-        let errorMsg = "❌ <strong>Location Access Denied:</strong> ";
-        switch(error.code) {
-            case error.PERMISSION_DENIED:
-                errorMsg += "Please enable location permissions in your browser settings.";
-                break;
-            case error.POSITION_UNAVAILABLE:
-                errorMsg += "Location information is unavailable.";
-                break;
-            case error.TIMEOUT:
-                errorMsg += "Location request timed out.";
-                break;
-            default:
-                errorMsg += "An unknown error occurred.";
-                break;
-        }
-        addMessage(errorMsg, 'bot', 'error');
+        addMessage("❌ <strong>Location Access Denied:</strong> Please enable location permissions.", 'bot', 'error');
     });
 });
 
-// Add some interactive chat functionality
 messageInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter' && !messageInput.disabled) {
         const message = messageInput.value.trim();
@@ -882,7 +884,6 @@ messageInput.addEventListener('keypress', (e) => {
             addMessage(message, 'user');
             messageInput.value = '';
             
-            // Simulate bot response
             setTimeout(() => {
                 addMessage("Thank you for your message! For detailed medical advice, please consult with a healthcare professional or use our diagnostic tools.", 'bot');
             }, 1000);
@@ -899,11 +900,13 @@ messageInput.addEventListener('keypress', (e) => {
 # -------------------------------
 @app.route("/")
 def index(): 
+    ensure_startup()  # Ensure startup tasks run on first request
     return render_template_string(chatbot_html)
 
 @app.route("/health")
 def health_check():
     """Health check endpoint"""
+    ensure_startup()  # Ensure startup tasks run
     return jsonify({
         "status": "healthy",
         "models_loaded": models_loaded,
@@ -913,9 +916,11 @@ def health_check():
 @app.route("/predict", methods=["POST"])
 def predict():
     """Enhanced prediction endpoint with better error handling"""
+    ensure_startup()  # Ensure startup tasks run
+    
     if not models_loaded:
         logger.error("Models not loaded")
-        return jsonify({"status": "error", "error": "AI models are not loaded. Please try again later."}), 503
+        return jsonify({"status": "error", "error": "AI models are still loading. Please try again in a moment."}), 503
     
     if "file" not in request.files: 
         return jsonify({"status": "error", "error": "No file uploaded"}), 400
@@ -967,7 +972,7 @@ def predict():
         return jsonify({
             "status": "success",
             "disease": disease,
-            "confidence": "high",  # You can add actual confidence scores if available
+            "confidence": "high",
             "timestamp": session['prediction_time']
         })
         
@@ -1011,7 +1016,7 @@ def get_doctors():
         url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
         params = {
             "location": f"{latitude},{longitude}",
-            "radius": 15000,  # 15 km radius
+            "radius": 15000,
             "type": "doctor",
             "keyword": "pulmonologist respiratory",
             "key": GOMAPS_API_KEY
@@ -1036,15 +1041,9 @@ def get_doctors():
         logger.info(f"✅ Found {len(doctors)} doctors")
         return jsonify({"doctors": doctors})
         
-    except requests.exceptions.Timeout:
-        logger.error("Google Maps API request timed out")
-        return jsonify({"doctors": [], "error": "Search timed out. Please try again."}), 408
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Google Maps API request failed: {e}")
-        return jsonify({"doctors": [], "error": "Unable to search for doctors at this time."}), 503
     except Exception as e:
-        logger.error(f"Unexpected error in get_doctors: {e}")
-        return jsonify({"doctors": [], "error": "An unexpected error occurred."}), 500
+        logger.error(f"Error in get_doctors: {e}")
+        return jsonify({"doctors": [], "error": "Unable to search for doctors at this time."}), 503
 
 @app.route("/generate_report")
 def generate_report():
@@ -1073,7 +1072,7 @@ def generate_report():
         pdf.line(20, pdf.get_y(), 190, pdf.get_y())
         pdf.ln(10)
         
-        # Patient Information Section
+        # Analysis Summary
         pdf.set_font("Arial", "B", 14)
         pdf.cell(0, 10, "Analysis Summary", ln=True)
         pdf.ln(5)
@@ -1089,7 +1088,6 @@ def generate_report():
         pdf.cell(0, 10, "AI Diagnosis", ln=True)
         pdf.ln(3)
         
-        # Disease description
         disease_descriptions = {
             "COPD": ("Chronic Obstructive Pulmonary Disease", "A progressive lung disease that makes breathing difficult."),
             "fibrosis": ("Pulmonary Fibrosis", "Scarring of lung tissue that affects breathing."),
@@ -1203,7 +1201,6 @@ def generate_report():
         
     except Exception as e:
         logger.error(f"❌ Error generating report: {str(e)}")
-        logger.error(traceback.format_exc())
         return "Error generating report. Please try again.", 500
 
 # -------------------------------
@@ -1223,31 +1220,14 @@ def server_error(e):
     return jsonify({"status": "error", "error": "Internal server error. Please try again."}), 500
 
 # -------------------------------
-# APPLICATION STARTUP
+# CLEANUP ON EXIT
 # -------------------------------
-@app.before_first_request
-def startup():
-    """Initialize application on first request"""
-    logger.info("🚀 Starting Multi-Chronic Disease Detection System...")
-    
-    # Load models in background thread
-    def load_models_background():
-        success = load_models()
-        if success:
-            logger.info("🎉 System ready for predictions!")
-        else:
-            logger.error("❌ System startup failed - models not loaded")
-    
-    # Start model loading in background
-    threading.Thread(target=load_models_background, daemon=True).start()
-    
-    # Start cleanup scheduler
-    def periodic_cleanup():
-        while True:
-            time.sleep(3600)  # Run every hour
-            cleanup_old_files()
-    
-    threading.Thread(target=periodic_cleanup, daemon=True).start()
+def cleanup_on_exit():
+    """Cleanup function to run on application exit"""
+    logger.info("🧹 Cleaning up resources...")
+    cleanup_old_files()
+
+atexit.register(cleanup_on_exit)
 
 # -------------------------------
 # RUN APPLICATION
