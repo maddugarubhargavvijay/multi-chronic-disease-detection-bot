@@ -17,7 +17,7 @@ import threading
 import time
 import atexit
 import gc
-import psutil
+import resource
 
 # Disable SSL warnings
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
@@ -50,13 +50,18 @@ models_loaded = False
 startup_complete = False
 
 # -------------------------------
-# MEMORY MONITORING
+# MEMORY MONITORING (WITHOUT PSUTIL)
 # -------------------------------
 def get_memory_usage():
-    """Get current memory usage in MB"""
+    """Get current memory usage in MB using resource module"""
     try:
-        process = psutil.Process(os.getpid())
-        return process.memory_info().rss / 1024 / 1024
+        # Get memory usage in bytes and convert to MB
+        usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # On Linux, ru_maxrss is in KB, on macOS/BSD it's in bytes
+        if os.name == 'posix':
+            return usage / 1024  # Convert KB to MB on Linux
+        else:
+            return usage / (1024 * 1024)  # Convert bytes to MB on other systems
     except:
         return 0
 
@@ -771,6 +776,7 @@ async function checkHealth() {
 }
 
 checkHealth();
+setInterval(checkHealth, 10000); // Check every 10 seconds
 
 addMessage(`
     <strong>Hello! Welcome to our AI Medical Assistant</strong><br>
@@ -945,7 +951,7 @@ def predict():
     
     if not models_loaded:
         logger.error("Models not loaded")
-        return jsonify({"status": "error", "error": "AI models are still loading. Please try again in a moment."}), 503
+        return jsonify({"status": "error", "error": "AI models are still loading. Please wait a moment and try again."}), 503
     
     if "file" not in request.files: 
         return jsonify({"status": "error", "error": "No file uploaded"}), 400
@@ -1024,9 +1030,11 @@ def predict():
         # Force cleanup on error
         gc.collect()
         
-        error_msg = "Server resources exhausted. Please try again in a few moments."
-        if "memory" in str(e).lower() or "timeout" in str(e).lower():
-            error_msg = "Processing requires more resources than available. Please try with a smaller image or upgrade server plan."
+        error_msg = "An error occurred during analysis. Please try again."
+        if "memory" in str(e).lower() or "resource" in str(e).lower():
+            error_msg = "Server resources are currently limited. Please try again in a few moments or use a smaller image."
+        elif "timeout" in str(e).lower():
+            error_msg = "Processing timed out. Please try with a smaller image or try again later."
         elif "image" in str(e).lower():
             error_msg = "Invalid image format. Please upload a clear X-ray image."
         
