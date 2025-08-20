@@ -16,6 +16,8 @@ from datetime import datetime
 import threading
 import time
 import atexit
+import gc
+import psutil
 
 # Disable SSL warnings
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
@@ -48,14 +50,25 @@ models_loaded = False
 startup_complete = False
 
 # -------------------------------
-# MODEL LOADING WITH OPTIMIZATION
+# MEMORY MONITORING
+# -------------------------------
+def get_memory_usage():
+    """Get current memory usage in MB"""
+    try:
+        process = psutil.Process(os.getpid())
+        return process.memory_info().rss / 1024 / 1024
+    except:
+        return 0
+
+# -------------------------------
+# MODEL LOADING WITH MEMORY OPTIMIZATION
 # -------------------------------
 def load_models():
-    """Load models with proper error handling and optimization"""
+    """Load models with memory optimization and proper error handling"""
     global cnn_model, rf_model, feature_extractor, models_loaded
     
     try:
-        logger.info("🔄 Starting model loading process...")
+        logger.info(f"🔄 Starting model loading process... Current memory: {get_memory_usage():.2f}MB")
         
         # Base directory setup
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -74,27 +87,32 @@ def load_models():
             logger.error(f"❌ RF model not found at: {rf_model_path}")
             return False
         
-        # Configure TensorFlow for better performance
-        tf.config.threading.set_intra_op_parallelism_threads(2)
-        tf.config.threading.set_inter_op_parallelism_threads(2)
-        
-        # Disable GPU if not available to avoid warnings
+        # Configure TensorFlow for memory efficiency
         try:
+            # Limit TensorFlow memory growth
             physical_devices = tf.config.list_physical_devices('GPU')
-            if not physical_devices:
+            if physical_devices:
+                tf.config.experimental.set_memory_growth(physical_devices[0], True)
+            else:
                 tf.config.set_visible_devices([], 'GPU')
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"TensorFlow GPU config warning: {e}")
         
-        # Load CNN model
+        # Reduce thread usage to save memory
+        tf.config.threading.set_intra_op_parallelism_threads(1)
+        tf.config.threading.set_inter_op_parallelism_threads(1)
+        
+        # Load CNN model with memory optimization
         logger.info("🔄 Loading CNN model...")
         cnn_model = tf.keras.models.load_model(cnn_model_path, compile=False)
-        logger.info("✅ CNN model loaded successfully")
+        gc.collect()  # Force garbage collection
+        logger.info(f"✅ CNN model loaded successfully. Memory: {get_memory_usage():.2f}MB")
         
         # Load Random Forest model
         logger.info("🔄 Loading Random Forest model...")
         rf_model = joblib.load(rf_model_path)
-        logger.info("✅ Random Forest model loaded successfully")
+        gc.collect()
+        logger.info(f"✅ Random Forest model loaded successfully. Memory: {get_memory_usage():.2f}MB")
         
         # Create feature extractor
         logger.info("🔄 Creating feature extractor...")
@@ -116,8 +134,9 @@ def load_models():
                 logger.error("❌ Could not create feature extractor")
                 return False
         
+        gc.collect()
         models_loaded = True
-        logger.info("🎉 All models loaded successfully!")
+        logger.info(f"🎉 All models loaded successfully! Final memory: {get_memory_usage():.2f}MB")
         return True
         
     except Exception as e:
@@ -134,7 +153,7 @@ def allowed_file(filename):
 # UTILITIES
 # -------------------------------
 def preprocess_image(image_path):
-    """Preprocess image with error handling"""
+    """Preprocess image with memory optimization"""
     try:
         logger.info(f"🔄 Preprocessing image: {image_path}")
         
@@ -143,10 +162,10 @@ def preprocess_image(image_path):
         if img is None:
             raise ValueError(f"Could not read image from {image_path}")
         
-        # Resize image
+        # Resize image to reduce memory usage
         img = cv2.resize(img, (224, 224))
         
-        # Normalize
+        # Normalize and convert to float32 (uses less memory than float64)
         img = img.astype(np.float32) / 255.0
         
         # Add batch dimension
@@ -184,6 +203,9 @@ def cleanup_old_files():
                     if current_time - os.path.getmtime(file_path) > 3600:  # 1 hour
                         os.remove(file_path)
                         logger.info(f"🗑️ Cleaned up old report: {filename}")
+        
+        # Force garbage collection after cleanup
+        gc.collect()
                         
     except Exception as e:
         logger.warning(f"⚠️ Error during cleanup: {str(e)}")
@@ -216,7 +238,7 @@ def ensure_startup():
         startup_complete = True
 
 # -------------------------------
-# HTML TEMPLATE (same as before)
+# HTML TEMPLATE
 # -------------------------------
 chatbot_html = """
 <!DOCTYPE html>
@@ -786,7 +808,7 @@ fileInput.addEventListener('change', async(event) => {
         uploadBtn.textContent = 'Processing...';
         
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 120000);
+        const timeoutId = setTimeout(() => controller.abort(), 180000); // 3 minutes timeout
         
         const response = await fetch('/predict', {
             method: 'POST',
@@ -818,9 +840,9 @@ fileInput.addEventListener('change', async(event) => {
     } catch (err) {
         removeLastMessage();
         if (err.name === 'AbortError') {
-            addMessage("⏱️ <strong>Timeout:</strong> Processing took too long. Please try with a smaller image or try again later.", 'bot', 'error');
+            addMessage("⏱️ <strong>Timeout:</strong> Processing took too long. Server may be under heavy load. Please try again later.", 'bot', 'error');
         } else {
-            addMessage("⚠️ <strong>Connection Failed:</strong> Please check your internet connection and try again.", 'bot', 'error');
+            addMessage("⚠️ <strong>Connection Failed:</strong> Server resources may be exhausted. Please try again in a few moments.", 'bot', 'error');
         }
     } finally {
         uploadBtn.disabled = false;
@@ -910,13 +932,16 @@ def health_check():
     return jsonify({
         "status": "healthy",
         "models_loaded": models_loaded,
+        "memory_usage_mb": get_memory_usage(),
         "timestamp": datetime.now().isoformat()
     })
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    """Enhanced prediction endpoint with better error handling"""
+    """Memory-optimized prediction endpoint"""
     ensure_startup()  # Ensure startup tasks run
+    
+    logger.info(f"🔄 Starting prediction. Memory before: {get_memory_usage():.2f}MB")
     
     if not models_loaded:
         logger.error("Models not loaded")
@@ -946,25 +971,40 @@ def predict():
         logger.info(f"🔄 Saving uploaded file: {filename}")
         file.save(xray_path)
         
-        # Preprocess image
+        # Preprocess image with memory optimization
         logger.info("🔄 Starting image preprocessing...")
         img = preprocess_image(xray_path)
+        logger.info(f"🔄 Image preprocessed. Memory: {get_memory_usage():.2f}MB")
         
-        # Extract features
+        # Extract features with explicit memory management
         logger.info("🔄 Extracting features...")
-        features = feature_extractor.predict(img, verbose=0).reshape(1, -1)
+        
+        # Force CPU processing and use batch size of 1
+        with tf.device('/CPU:0'):
+            features = feature_extractor.predict(img, batch_size=1, verbose=0)
+            features = features.reshape(1, -1)
+        
+        # Clear image from memory immediately
+        del img
+        gc.collect()
+        
+        logger.info(f"🔄 Features extracted. Memory: {get_memory_usage():.2f}MB")
         
         # Make prediction
         logger.info("🔄 Making prediction...")
         rf_prediction = rf_model.predict(features)[0]
         disease = DISEASE_CLASSES[int(rf_prediction)]
         
+        # Clear features from memory
+        del features
+        gc.collect()
+        
         # Store in session
         session['disease'] = disease
         session['xray_path'] = xray_path
         session['prediction_time'] = datetime.now().isoformat()
         
-        logger.info(f"✅ Prediction successful: {disease}")
+        logger.info(f"✅ Prediction successful: {disease}. Final memory: {get_memory_usage():.2f}MB")
         
         # Cleanup old files in background
         threading.Thread(target=cleanup_old_files, daemon=True).start()
@@ -973,18 +1013,22 @@ def predict():
             "status": "success",
             "disease": disease,
             "confidence": "high",
-            "timestamp": session['prediction_time']
+            "timestamp": session['prediction_time'],
+            "memory_usage_mb": get_memory_usage()
         })
         
     except Exception as e:
         logger.error(f"❌ Prediction error: {str(e)}")
         logger.error(traceback.format_exc())
         
-        error_msg = "An error occurred during image analysis. Please try again."
-        if "image" in str(e).lower():
+        # Force cleanup on error
+        gc.collect()
+        
+        error_msg = "Server resources exhausted. Please try again in a few moments."
+        if "memory" in str(e).lower() or "timeout" in str(e).lower():
+            error_msg = "Processing requires more resources than available. Please try with a smaller image or upgrade server plan."
+        elif "image" in str(e).lower():
             error_msg = "Invalid image format. Please upload a clear X-ray image."
-        elif "memory" in str(e).lower():
-            error_msg = "Server is busy. Please try again in a few moments."
         
         return jsonify({"status": "error", "error": error_msg}), 500
 
