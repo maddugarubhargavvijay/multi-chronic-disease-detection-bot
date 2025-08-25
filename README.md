@@ -80,11 +80,21 @@ F --> H[PDF Report Generation]
 
 ---
 
-## 📂 Project Structure  
 
-Multi-Chronic-Disease-Detection-Bot/
-│── app/ # Core Flask application
-│── models/ # Saved models & feature extractor
-│── notebooks/ # Jupyter notebooks for experiments
-│── requirements.txt # Dependencies
-│── README.md # Project documentation
+## 🖥️ How to Run  
+
+1️⃣ Clone the repository  
+```bash
+git clone https://github.com/maddugarubhargavvijay/multi-chronic-disease-detection-bot.git  
+cd multi-chronic-disease-detection-bot
+
+2️⃣ Create virtual environment & install dependencies
+
+pip install -r requirements.txt 
+
+3️⃣ Run Flask app
+
+python app/app.py  
+
+4️⃣ Access application
+👉 Open your browser → http://127.0.0.1:5000/
