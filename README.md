@@ -83,8 +83,10 @@ F --> H[PDF Report Generation]
 
 ## 🖥️ How to Run  
 
-1️⃣ Clone the repository  
+ 
 ```bash
+1️⃣ Clone the repository
+
 git clone https://github.com/maddugarubhargavvijay/multi-chronic-disease-detection-bot.git  
 cd multi-chronic-disease-detection-bot
 
