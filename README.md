@@ -47,14 +47,15 @@ Respiratory diseases are a **leading cause of morbidity worldwide**, and delayed
 ---
 
 ## 🛠️ Tech Stack  
+ 
 
-- **Machine Learning & Deep Learning**: TensorFlow/Keras, scikit-learn  
-- **Feature Extraction**: DenseNet  
-- **Classifier**: Random Forest  
-- **Web Framework**: Flask  
-- **Frontend/Chatbot**: HTML, CSS, JS (via Flask integration)  
-- **APIs**: GoMaps API (doctor suggestions)  
-- **Report Generation**: ReportLab  
+- **Machine Learning & Deep Learning:** TensorFlow/Keras, scikit-learn  
+- **Feature Extraction:** DenseNet  
+- **Classifier:** Random Forest  
+- **Web Framework (Backend + Frontend Integration):** Flask  
+- **APIs:** GoMaps API (doctor suggestions)  
+- **Report Generation:** ReportLab  
+
 
 ---
 
