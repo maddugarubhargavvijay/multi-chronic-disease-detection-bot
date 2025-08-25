@@ -1,66 +1,57 @@
-# 🩺 Multi-Chronic Disease Detection Bot  
+🩺 Multi-Chronic Disease Detection Bot
 
-An AI-powered diagnostic support system that detects **multiple chronic respiratory diseases** from chest X-ray images using **Deep Learning + Machine Learning**, and connects patients to nearby doctors via an interactive chatbot.  
+An AI-powered diagnostic support system that detects multiple chronic respiratory diseases from chest X-ray images using Deep Learning + Machine Learning, and connects patients to nearby doctors via an interactive chatbot.
 
----
+📌 Key Features
 
-## 🚀 Project Overview  
+✅ Detects 5 chronic respiratory diseases (COPD, Pulmonary Hypertension, Pneumonia, Pulmonary Fibrosis, Tuberculosis)
 
-The **Multi-Chronic Disease Detection Bot** is designed to assist in the **early diagnosis of respiratory illnesses** using chest X-ray images. It focuses on addressing challenges in **rural and under-resourced areas**, where access to specialized healthcare is often limited.  
+✅ Achieved 91.67% model accuracy using CNN + Random Forest
 
-The system detects **five major chronic respiratory diseases**:  
-- 🫁 **Chronic Obstructive Pulmonary Disease (COPD)**  
-- ❤️ **Pulmonary Hypertension**  
-- 🦠 **Pneumonia**  
-- 🫀 **Pulmonary Fibrosis**  
-- 🧫 **Tuberculosis (TB)**  
+✅ Interactive chatbot interface for real-time predictions
 
----
+✅ Nearby doctors suggestion using GoMaps API
 
-## 🎯 Motivation  
+✅ Downloadable PDF medical reports with patient details & predictions
 
-Respiratory diseases are a **leading cause of morbidity worldwide**, and delayed diagnosis can lead to severe complications. Our bot bridges the gap by:  
-- ✅ Providing **AI-powered automated detection**  
-- ✅ Suggesting **nearby doctors** for treatment  
-- ✅ Generating **personalized PDF medical reports**  
+🎯 Motivation
 
----
+Respiratory diseases are a leading cause of morbidity worldwide, and delayed diagnosis can lead to severe complications. Our bot bridges the gap by:
 
-## 🧠 Methodology  
+Providing AI-powered automated detection
 
-### 🔹 Data Collection & Preprocessing  
-- Collected **publicly available chest X-ray datasets**  
-- Applied preprocessing: resizing, grayscale conversion, normalization  
-- Performed **data augmentation** for robustness  
+Suggesting nearby doctors for treatment
 
-### 🔹 Model Architecture  
-- **DenseNet (Pre-trained CNN)** → Used as a **feature extractor**  
-- **Random Forest Classifier** → Classifies extracted features into disease categories  
-- Achieved **91.67% accuracy** on test data  
+Generating personalized medical reports
 
-### 🔹 System Integration  
-- **Flask Backend** → Manages disease detection & chatbot interface  
-- **Chatbot** → Allows users to upload X-ray images & receive predictions  
-- **GoMaps API** → Fetches **nearby doctors** with details (name, specialization, distance)  
-- **PDF Report Generator** → Generates downloadable reports with patient details & predictions  
+🧠 Methodology
+🔹 Data Collection & Preprocessing
 
----
+Used publicly available chest X-ray datasets
 
-## 🛠️ Tech Stack  
+Preprocessing: resizing, grayscale conversion, normalization
 
-- **Machine Learning & Deep Learning**: TensorFlow/Keras, scikit-learn  
-- **Feature Extraction**: DenseNet  
-- **Classifier**: Random Forest  
-- **Web Framework**: Flask  
-- **Frontend/Chatbot**: HTML, CSS, JS (via Flask integration)  
-- **APIs**: GoMaps API (doctor suggestions)  
-- **Report Generation**: ReportLab  
+Data augmentation for improved robustness
 
----
+🔹 Model Architecture
 
-## ⚙️ System Workflow  
+DenseNet (Pre-trained CNN) → Used as feature extractor
 
-```mermaid
+Random Forest Classifier → Classifies extracted features into disease categories
+
+Achieved 91.67% accuracy on test data
+
+🔹 System Integration
+
+Flask Backend → Handles detection & chatbot communication
+
+Chatbot → Upload X-ray → Get prediction instantly
+
+GoMaps API → Suggests nearby doctors with details
+
+Report Generator → Generates downloadable PDF reports
+
+⚙️ System Workflow
 flowchart TD
 A[Chest X-ray Image Upload] --> B[Preprocessing & Augmentation]  
 B --> C[Feature Extraction with DenseNet]  
@@ -68,4 +59,61 @@ C --> D[Random Forest Classifier]
 D --> E[Predicted Disease Output]  
 E --> F[Chatbot Interaction]  
 F --> G[Nearby Doctors via GoMaps API]  
-F --> H[PDF Report Generation]  
+F --> H[PDF Report Generation]
+
+📊 Results
+
+🏆 91.67% test accuracy
+
+🫁 Robust detection across five chronic respiratory diseases
+
+💬 Successfully integrated chatbot + doctor suggestions + PDF reports
+
+🛠️ Tech Stack
+
+Deep Learning & ML: TensorFlow/Keras, scikit-learn
+
+Feature Extraction: DenseNet
+
+Classifier: Random Forest
+
+Backend: Flask
+
+Frontend: HTML, CSS, JS (Flask integration)
+
+APIs: GoMaps API (doctor suggestions)
+
+Reports: ReportLab (PDF generation)
+
+📂 Project Structure
+Multi-Chronic-Disease-Detection-Bot/
+│── app/                  # Core Flask application  
+│── frontend/             # Chatbot frontend (UI)  
+│── models/               # Saved models & feature extractor  
+│── notebooks/            # Jupyter notebooks for experiments  
+│── static/               # Static files (CSS, JS, Images)  
+│── templates/            # HTML templates for Flask  
+│── reports/              # Generated PDF reports  
+│── requirements.txt      # Dependencies  
+│── README.md             # Documentation  
+
+🖥️ How to Run
+
+Clone the repository
+
+git clone https://github.com/maddugarubhargavvijay/multi-chronic-disease-detection-bot.git
+cd multi-chronic-disease-detection-bot
+
+
+Create virtual environment & install dependencies
+
+pip install -r requirements.txt
+
+
+Run Flask app
+
+python app/app.py
+
+
+Access application
+Open browser → http://127.0.0.1:5000/
