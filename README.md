@@ -74,7 +74,7 @@ F --> H[PDF Report Generation]
 
 ## 📊 Results  
 
-- 🏆 Achieved **91.67% test accuracy**  
+- 🏆 Achieved **92.25% test accuracy**  
 - 🫁 Robust detection across five chronic respiratory diseases  
 - 💬 Successfully integrated chatbot + doctor suggestions + PDF reports  
 
@@ -82,3 +82,9 @@ F --> H[PDF Report Generation]
 
 ## 📂 Project Structure  
 
+Multi-Chronic-Disease-Detection-Bot/
+│── app/ # Core Flask application
+│── models/ # Saved models & feature extractor
+│── notebooks/ # Jupyter notebooks for experiments
+│── requirements.txt # Dependencies
+│── README.md # Project documentation
